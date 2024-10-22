@@ -1,0 +1,3 @@
+hello this is a test to see how spark makes partitions of a text file
+and stores everything in an RDD. I like pizza
+and pasta
