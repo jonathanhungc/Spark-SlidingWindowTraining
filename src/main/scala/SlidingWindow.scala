@@ -36,12 +36,20 @@ object SlidingWindow {
   }
 
   // Function to create sliding windows
-  def createSlidingWindows(arr: Array[Array[String]], windowSize: Int): Array[DataSet] = {
-    arr.sliding(windowSize + 1).map(window => {
-      val mainWindow = window.take(windowSize)        // Take the main sliding window
-      val nextElement = window.lift(windowSize)       // Get the next element (if it exists)
-      (mainWindow, nextElement)                       // Return the window and the next element
-    })
+  def createSlidingWindows(arr: Array[String], windowSize: Int, model: Word2Vec): DataSet = {
+
+    // Use sliding to generate windows and next elements
+    val windowsWithTargets = arr.sliding(windowSize + 1).toArray.map { window =>
+      val mainWindow = window.take(windowSize)  // Take the main sliding window
+      val nextElement = window.lastOption.getOrElse("")  // Get the next element, or empty if none exists
+      (mainWindow, nextElement)
+    }
+
+    // Separate the sliding windows and targets into two arrays
+    val slidingWindows = windowsWithTargets.map(_._1)  // Array of arrays for the windows
+    val targets = windowsWithTargets.map(_._2)         // Array of words for the targets
+
+    getTrainingData(slidingWindows, targets, model)
 
   }
 
@@ -76,96 +84,84 @@ object SlidingWindow {
     // Working with Spark
     val sc = createSparkContext()
 
-    val dataFile = sc.textFile("src/main/resources/input")  // get file with data
+    val dataFile = sc.textFile("src/main/resources/input")
 
-    val indexedWordsRDD = dataFile.flatMap(line => line.split("\\W+")).zipWithIndex()
+    // Group words by index in blocks of 5, each block representing a sentence
+    val arraysOfWords = dataFile
+      .flatMap(line => line.split("\\W+"))  // Split words by non-word characters
+      .zipWithIndex()                       // Assign an index to each word
+      .map{ case (word, index) =>
+        (index / 5, word)                   // Group words into blocks of 5
+      }
+      .groupByKey()                         // Group words by the calculated index
+      .map{ case (groupIndex, words) =>
+        words.toArray                       // Convert each group of words into an array
+      }
 
-    // Group words by their index in blocks of `wordsPerGroup`
-    val groupedWordsRDD = indexedWordsRDD.map{ case (word, index) =>
-      (index / 5, word)  // Assign each word to a group
-    }.groupByKey()  // Group words by the calculated index
+    val trainingData = arraysOfWords.map(sentence => createSlidingWindows(sentence, 3, word2Vec))
 
-    // Convert to arrays of words. Each array corresponds to a whole continuous sentences.
-    // arrayOfWords is an RDD[Array[String]]
-    val arraysOfWords = groupedWordsRDD.map{ case (groupIndex, words) =>
-      words.toArray  // Convert each group into an array of words
-    }
 
-    val indexedArraysRDD = arraysOfWords.zipWithIndex()
+    // Define network configuration with an embedding layer
+    //    val config: MultiLayerConfiguration = new NeuralNetConfiguration.Builder()
+    //      .list()
+    //      .layer(new LSTM.Builder()
+    //        .nIn(3)
+    //        .nOut(3)
+    //        .activation(Activation.TANH)
+    //        .build())
+    //      .layer(new GlobalPoolingLayer.Builder(PoolingType.AVG).build())
+    //      .layer(new OutputLayer.Builder(LossFunctions.LossFunction.NEGATIVELOGLIKELIHOOD)
+    //        .nIn(3)
+    //        .nOut(3)
+    //        .activation(Activation.SOFTMAX)
+    //        .build())
+    //      .build()
+    //
+    //    // Initialize the model with the defined configuration
+    //    val model = new MultiLayerNetwork(config)
+    //    model.init()
 
-    // Group arrays of words into groups of 5
-    val groupedArraysRDD = indexedArraysRDD.map{ case (array, index) =>
-      (index / 5, array)  // Group arrays by dividing the index by 5
-    }.groupByKey()
-
-    // Convert grouped arrays into a list of 5 arrays (sentences) per group
-    val groupedSentencesRDD = groupedArraysRDD.map { case (groupIndex, arrays) =>
-      arrays.toArray  // Convert the grouped arrays to an array (containing 5 arrays)
-    }
-
-    val trainingData = groupedSentencesRDD.flatMap(sentence => createSlidingWindows(sentence, 3))
+    //    val inputData: Array[Array[Array[Double]]] = Array(
+    //      Array( // First sentence
+    //        Array(0.1, 0.2, 0.3), // Word 1
+    //        Array(0.4, 0.5, 0.6), // Word 2
+    //        Array(0.7, 0.8, 0.9),  // Word 3
+    //        Array(1.0, 1.1, 1.2)
+    //      ),
+    //      Array( // Second sentence
+    //        Array(1.0, 1.1, 1.2), // Word 1
+    //        Array(1.3, 1.4, 1.5), // Word 2
+    //        Array(1.6, 1.7, 1.8),  // Word 3
+    //        Array(1.9, 2.0, 2.1)
+    //      )
+    //    )
+    //
+    //    // Create an INDArray for the input
+    //    val inputFeatures: INDArray = Nd4j.create(inputData).permute(0, 2, 1)
+    //
+    //    // Output: Target word (represented as a 3-dimensional vector) for each sentence
+    //    val outputData: Array[Array[Double]] = Array(
+    //      Array(0.9, 0.8, 0.7),  // Target for first sentence
+    //      Array(1.8, 1.7, 1.6)   // Target for second sentence
+    //    )
+    //
+    //    // Create an INDArray for the output
+    //    val outputLabels: INDArray = Nd4j.create(outputData)
+    //
+    //    //    // Print both input and output to verify
+    //    println("Input INDArray:")
+    //    println(inputFeatures)
+    //
+    //    println("\nOutput INDArray:")
+    //    println(outputLabels)
+    //
+    //    println(s"Input shape: ${inputFeatures.shape.mkString(", ")}") // Should output: 2, 3, 4
+    //    println(s"Output shape: ${outputLabels.shape.mkString(", ")}") // Should output: 2, 3
+    //
+    //
+    //    model.fit(new DataSet(inputFeatures, outputLabels))
 
     println("stopping sparkContext")
     sc.stop()
-
-    // Define network configuration with an embedding layer
-//    val config: MultiLayerConfiguration = new NeuralNetConfiguration.Builder()
-//      .list()
-//      .layer(new LSTM.Builder()
-//        .nIn(3)
-//        .nOut(3)
-//        .activation(Activation.TANH)
-//        .build())
-//      .layer(new GlobalPoolingLayer.Builder(PoolingType.AVG).build())
-//      .layer(new OutputLayer.Builder(LossFunctions.LossFunction.NEGATIVELOGLIKELIHOOD)
-//        .nIn(3)
-//        .nOut(3)
-//        .activation(Activation.SOFTMAX)
-//        .build())
-//      .build()
-//
-//    // Initialize the model with the defined configuration
-//    val model = new MultiLayerNetwork(config)
-//    model.init()
-//
-//    val inputData: Array[Array[Array[Double]]] = Array(
-//      Array( // First sentence
-//        Array(0.1, 0.2, 0.3), // Word 1
-//        Array(0.4, 0.5, 0.6), // Word 2
-//        Array(0.7, 0.8, 0.9),  // Word 3
-//        Array(1.0, 1.1, 1.2)
-//      ),
-//      Array( // Second sentence
-//        Array(1.0, 1.1, 1.2), // Word 1
-//        Array(1.3, 1.4, 1.5), // Word 2
-//        Array(1.6, 1.7, 1.8),  // Word 3
-//        Array(1.9, 2.0, 2.1)
-//      )
-//    )
-//
-//    // Create an INDArray for the input
-//    val inputFeatures: INDArray = Nd4j.create(inputData).permute(0, 2, 1)
-//
-//    // Output: Target word (represented as a 3-dimensional vector) for each sentence
-//    val outputData: Array[Array[Double]] = Array(
-//      Array(0.9, 0.8, 0.7),  // Target for first sentence
-//      Array(1.8, 1.7, 1.6)   // Target for second sentence
-//    )
-//
-//    // Create an INDArray for the output
-//    val outputLabels: INDArray = Nd4j.create(outputData)
-//
-////    // Print both input and output to verify
-//    println("Input INDArray:")
-//    println(inputFeatures)
-//
-//    println("\nOutput INDArray:")
-//    println(outputLabels)
-//
-//    println(s"Input shape: ${inputFeatures.shape.mkString(", ")}") // Should output: 2, 3, 4
-//    println(s"Output shape: ${outputLabels.shape.mkString(", ")}") // Should output: 2, 3
-//
-//
-//    model.fit(new DataSet(inputFeatures, outputLabels))
   }
 }
