@@ -1,4 +1,4 @@
-# Homework 2: MapReduce
+# Homework 2: Spark Sliding Window Training
 ### Name: Jonathan Hung
 
 #### UIC email: jhung9@uic.edu

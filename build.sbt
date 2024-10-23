@@ -70,6 +70,13 @@ libraryDependencies ++= Seq(
 
   "org.scalatest" %% "scalatest" % "3.2.19" % "test",
 
+
+  "org.slf4j" % "slf4j-api" % "2.0.16",
+
+  "ch.qos.logback" % "logback-classic" % "1.5.6",
+
+  "com.typesafe" % "config" % "1.4.3",
+
 )
 
 ThisBuild / fork := true  // Forks a JVM to avoid heap space issues

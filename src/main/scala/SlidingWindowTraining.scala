@@ -24,10 +24,18 @@ import org.nd4j.linalg.activations.Activation
 import org.deeplearning4j.models.word2vec.Word2Vec
 import org.deeplearning4j.models.embeddings.loader.WordVectorSerializer
 
-object SlidingWindow {
+import org.slf4j.LoggerFactory
+import com.typesafe.config.ConfigFactory
+
+
+object SlidingWindowTraining {
+
+//  private val log = LoggerFactory.getLogger(classOf[SlidingWindowTraining])
+//  private val config = ConfigFactory.load()
 
   private def createSparkContext(): SparkContext = {
     // Configure Spark for local or cluster mode
+    //log.info("Setting up SparkConf")
     val conf = new SparkConf()
       .setAppName("Sample App")
       .setMaster("local[*]") // For local testing, or use "yarn", "mesos", etc. in a cluster
@@ -49,26 +57,45 @@ object SlidingWindow {
     val slidingWindows = windowsWithTargets.map(_._1)  // Array of arrays for the windows
     val targets = windowsWithTargets.map(_._2)         // Array of words for the targets
 
+
+    println("createSlidingWindows(): Sliding Windows and Corresponding Targets:")
+    slidingWindows.zip(targets).foreach { case (window, target) =>
+      println(s"Window: ${window.mkString(", ")} => Target: $target")
+    }
+
     getTrainingData(slidingWindows, targets, model)
 
   }
 
+
   // Function to input an array of sentences (each sentence is an array of words) to get DataSet with input and output
-  def getTrainingData(inputSentences: Array[Array[String]], outputWords: Array[String], model: Word2Vec): DataSet = {
+   def getTrainingData(inputSentences: Array[Array[String]], outputWords: Array[String], model: Word2Vec): DataSet = {
 
     // For each sentence, take each word in the sentence and get its vector
-    val inputTensor = inputSentences.map(sentence => sentence.map(word =>
-      model.getWordVectorMatrix(word).toDoubleVector))
+    val inputTensor = inputSentences.map(sentence => sentence.map{ word =>
+      if (model.hasWord(word)) {
+        model.getWordVectorMatrix(word).toDoubleVector
+      } else {
+        Array.fill(model.getLayerSize)(0.0) // Example: Zero vector of the same dimension
+      }
+    })
 
     val inputINDArray = Nd4j.create(inputTensor).permute(0, 2, 1)
 
-    val outputLabels = outputWords.map(word => {
-      model.getWordVectorMatrix(word).toDoubleVector
-    })
+    val outputLabels = outputWords.map{ word =>
+      if (model.hasWord(word)) {
+        model.getWordVectorMatrix(word).toDoubleVector
+      } else {
+        Array.fill(model.getLayerSize)(0.0) // Example: Zero vector of the same dimension
+      }
+    }
 
     val outputINDArray = Nd4j.create(outputLabels)
 
-    new DataSet(inputINDArray, outputINDArray)
+     println("Input array:" + inputINDArray)
+     println("Output array:" + outputINDArray)
+
+     new DataSet(inputINDArray, outputINDArray)
   }
 
 
@@ -84,8 +111,11 @@ object SlidingWindow {
     // Working with Spark
     val sc = createSparkContext()
 
+    val word2VecBroadcast = sc.broadcast(word2Vec)
+
     val dataFile = sc.textFile("src/main/resources/input")
 
+    print("run(): Creating arrayOfWords")
     // Group words by index in blocks of 5, each block representing a sentence
     val arraysOfWords = dataFile
       .flatMap(line => line.split("\\W+"))  // Split words by non-word characters
@@ -98,7 +128,21 @@ object SlidingWindow {
         words.toArray                       // Convert each group of words into an array
       }
 
-    val trainingData = arraysOfWords.map(sentence => createSlidingWindows(sentence, 3, word2Vec))
+    //arraysOfWords.collect().foreach(array => println(array.mkString("Array(", ", ", ")")))
+
+    println("run(): Creating trainingData from arrayOfWords")
+    val trainingData = arraysOfWords.map(sentence => createSlidingWindows(sentence, 3, word2VecBroadcast.value))
+
+    println("run(): collecting trainingData")
+    val collectedData = trainingData.collect()
+
+      // Print collected training data for verification
+      collectedData.foreach { dataSet =>
+        println("Input INDArray:")
+        println(dataSet.getFeatures)
+        println("Output INDArray:")
+        println(dataSet.getLabels)
+      }
 
 
     // Define network configuration with an embedding layer
@@ -165,3 +209,10 @@ object SlidingWindow {
     sc.stop()
   }
 }
+
+//object SlidingWindowDriver {
+//  def main(args: Array[String]): Unit = {
+//    val slidingWindow = new SlidingWindowTraining()
+//    slidingWindow.run()
+//  }
+//}
