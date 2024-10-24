@@ -1,24 +1,19 @@
-import org.apache.spark.SparkContext
 import org.apache.spark.SparkConf
-import org.apache.spark.rdd.RDD
+import org.apache.spark.SparkContext
+import org.deeplearning4j.spark.impl.paramavg.ParameterAveragingTrainingMaster
+import org.deeplearning4j.spark.impl.multilayer.SparkDl4jMultiLayer
 import org.deeplearning4j.nn.conf.MultiLayerConfiguration
+import org.nd4j.linalg.dataset.DataSet
+import org.apache.spark.rdd.RDD
+
 import org.deeplearning4j.nn.conf.layers.{GlobalPoolingLayer, LSTM, OutputLayer, PoolingType}
 import org.deeplearning4j.nn.multilayer.MultiLayerNetwork
-import org.deeplearning4j.optimize.api.IterationListener
-import org.deeplearning4j.optimize.listeners.ScoreIterationListener
-import org.deeplearning4j.spark.api.TrainingMaster
-import org.deeplearning4j.spark.impl.multilayer.SparkDl4jMultiLayer
-import org.deeplearning4j.spark.impl.paramavg.ParameterAveragingTrainingMaster
 import org.nd4j.linalg.lossfunctions.LossFunctions
-//import org.deeplearning4j.spark.parameterserver.training.SharedTrainingMaster
-import org.nd4j.linalg.dataset.DataSet
-import org.nd4j.linalg.dataset.api.iterator.DataSetIterator
-import org.apache.spark.api.java.JavaRDD
+
 
 import org.nd4j.linalg.factory.Nd4j
 import org.nd4j.linalg.api.ndarray.INDArray
 import org.deeplearning4j.nn.conf.NeuralNetConfiguration
-import org.deeplearning4j.nn.conf.layers.EmbeddingLayer
 import org.nd4j.linalg.activations.Activation
 
 import org.deeplearning4j.models.word2vec.Word2Vec
@@ -30,12 +25,12 @@ import com.typesafe.config.ConfigFactory
 
 object SlidingWindowTraining {
 
-//  private val log = LoggerFactory.getLogger(classOf[SlidingWindowTraining])
-//  private val config = ConfigFactory.load()
+  private val log = LoggerFactory.getLogger("SlidingWindowTraining")
+  private val config = ConfigFactory.load()
 
   private def createSparkContext(): SparkContext = {
     // Configure Spark for local or cluster mode
-    //log.info("Setting up SparkConf")
+    log.info("createSparkContext(): Setting up SparkConf")
     val conf = new SparkConf()
       .setAppName("Sample App")
       .setMaster("local[*]") // For local testing, or use "yarn", "mesos", etc. in a cluster
@@ -44,10 +39,11 @@ object SlidingWindowTraining {
   }
 
   // Function to create sliding windows
-  def createSlidingWindows(arr: Array[String], windowSize: Int, model: Word2Vec): DataSet = {
+  private def createSlidingWindows(arr: Array[String], windowSize: Int, model: Word2Vec): DataSet = {
 
     // Use sliding to generate windows and next elements
-    val windowsWithTargets = arr.sliding(windowSize + 1).toArray.map { window =>
+    log.info("createSlidingWindows(): Creating sliding windows and targets")
+    val windowsWithTargets = arr.sliding(windowSize + 1, 1).toArray.map { window =>
       val mainWindow = window.take(windowSize)  // Take the main sliding window
       val nextElement = window.lastOption.getOrElse("")  // Get the next element, or empty if none exists
       (mainWindow, nextElement)
@@ -58,161 +54,120 @@ object SlidingWindowTraining {
     val targets = windowsWithTargets.map(_._2)         // Array of words for the targets
 
 
-    println("createSlidingWindows(): Sliding Windows and Corresponding Targets:")
+    log.info("createSlidingWindows(): Sliding windows and corresponding targets")
     slidingWindows.zip(targets).foreach { case (window, target) =>
-      println(s"Window: ${window.mkString(", ")} => Target: $target")
+      log.info(s"Window: ${window.mkString(", ")} => Target: $target")
     }
 
+    log.info("createSlidingWindows(): Getting DataSet for windows and target")
     getTrainingData(slidingWindows, targets, model)
 
   }
 
 
-  // Function to input an array of sentences (each sentence is an array of words) to get DataSet with input and output
-   def getTrainingData(inputSentences: Array[Array[String]], outputWords: Array[String], model: Word2Vec): DataSet = {
+   // Function to input an array of sentences (each sentence is an array of words) to get DataSet with input and output
+   private def getTrainingData(inputSentences: Array[Array[String]], outputWords: Array[String], model: Word2Vec): DataSet = {
 
-    // For each sentence, take each word in the sentence and get its vector
-    val inputTensor = inputSentences.map(sentence => sentence.map{ word =>
-      if (model.hasWord(word)) {
-        model.getWordVectorMatrix(word).toDoubleVector
-      } else {
-        Array.fill(model.getLayerSize)(0.0) // Example: Zero vector of the same dimension
-      }
-    })
+     // Helper function to get the word vector or a zero vector if the word is not found
+     def getWordVector(word: String): Array[Double] = {
+       if (model.hasWord(word)) {
+         model.getWordVectorMatrix(word).toDoubleVector
+       } else {
+         log.info(s"getTrainingData(): Error word: $word")
+         Array.fill(model.getLayerSize)(0.0)
+       }
+     }
 
-    val inputINDArray = Nd4j.create(inputTensor).permute(0, 2, 1)
+     // Map input sentences to their word vectors
+     val inputTensor = inputSentences.map(sentence => sentence.map(getWordVector))
 
-    val outputLabels = outputWords.map{ word =>
-      if (model.hasWord(word)) {
-        model.getWordVectorMatrix(word).toDoubleVector
-      } else {
-        Array.fill(model.getLayerSize)(0.0) // Example: Zero vector of the same dimension
-      }
-    }
+     // Create input INDArray and adjust the axes. This is a 3D tensor
+     val inputINDArray = Nd4j.create(inputTensor).permute(0, 2, 1)
 
-    val outputINDArray = Nd4j.create(outputLabels)
+     // Map output words to their word vectors
+     val outputLabels = outputWords.map(getWordVector)
 
-     println("Input array:" + inputINDArray)
-     println("Output array:" + outputINDArray)
+     // Create output INDArray. This is a 2D tensor
+     val outputINDArray = Nd4j.create(outputLabels)
 
+     log.info(s"Input array: $inputINDArray")
+     log.info(s"Output array: $outputINDArray")
+
+     // Return the dataset with input and outputs
      new DataSet(inputINDArray, outputINDArray)
-  }
+   }
 
+
+  // Define network configuration with an embedding layer
+  private def createMultiLayerConfiguration(): MultiLayerConfiguration = {
+
+    log.info("createMultiLayerConfiguration(): Setting up multilayer configuration")
+    val model: MultiLayerConfiguration = new NeuralNetConfiguration.Builder()
+      .list()
+      .layer(new LSTM.Builder()
+        .nIn(3)
+        .nOut(3)
+        .activation(Activation.TANH)
+        .build())
+      .layer(new GlobalPoolingLayer.Builder(PoolingType.AVG).build())
+      .layer(new OutputLayer.Builder(LossFunctions.LossFunction.NEGATIVELOGLIKELIHOOD)
+        .nIn(3)
+        .nOut(3)
+        .activation(Activation.SOFTMAX)
+        .build())
+      .build()
+
+    model
+  }
 
   def main(args: Array[String]): Unit = {
 
     // Load the Word2Vec model from the file
+    log.info("main(): Loading Word2Vec model")
     val word2Vec = WordVectorSerializer.readWord2VecModel("src/main/resources/wordvectors.txt")
 
-    System.out.println(word2Vec.hasWord("word1"))
-
-    System.out.println(word2Vec.getWordVectorMatrix("word1"))
-
     // Working with Spark
+    log.info("main(): Creating SparkContext")
     val sc = createSparkContext()
 
     val word2VecBroadcast = sc.broadcast(word2Vec)
 
+    log.info("main(): Loading input files into RDD")
     val dataFile = sc.textFile("src/main/resources/input")
 
-    print("run(): Creating arrayOfWords")
+    log.info("main(): Creating arrayOfWords")
     // Group words by index in blocks of 5, each block representing a sentence
     val arraysOfWords = dataFile
       .flatMap(line => line.split("\\W+"))  // Split words by non-word characters
       .zipWithIndex()                       // Assign an index to each word
       .map{ case (word, index) =>
-        (index / 5, word)                   // Group words into blocks of 5
+        (index / config.getInt("app.sentenceLength"), word)                   // Group words into blocks of 5
       }
       .groupByKey()                         // Group words by the calculated index
       .map{ case (groupIndex, words) =>
         words.toArray                       // Convert each group of words into an array
       }
 
-    //arraysOfWords.collect().foreach(array => println(array.mkString("Array(", ", ", ")")))
+    log.info("main(): Creating trainingData from arrayOfWords")
+    val trainingData = arraysOfWords.map(sentence => createSlidingWindows(sentence,
+      config.getInt("app.windowSize"), word2VecBroadcast.value))
 
-    println("run(): Creating trainingData from arrayOfWords")
-    val trainingData = arraysOfWords.map(sentence => createSlidingWindows(sentence, 3, word2VecBroadcast.value))
+    log.info("main(): Creating MultiLayerConfiguration")
+    val model: MultiLayerConfiguration = createMultiLayerConfiguration()
 
-    println("run(): collecting trainingData")
-    val collectedData = trainingData.collect()
+    log.info("main(): Creating ParameterAveragingTrainingMaster")
+    val trainingMaster = new ParameterAveragingTrainingMaster.Builder(config.getInt("app.examplesPerDataSetObject")).build()
 
-      // Print collected training data for verification
-      collectedData.foreach { dataSet =>
-        println("Input INDArray:")
-        println(dataSet.getFeatures)
-        println("Output INDArray:")
-        println(dataSet.getLabels)
-      }
+    log.info("main(): Creating SparkDl4jMultiLayer")
+    val sparkNet = new SparkDl4jMultiLayer(sc, model, trainingMaster) // Putting together spark context, neural net model
+                                                                      // and training master
+    // Train the model for numEpochs
+    val numEpochs = 10
+    for (epoch <- 1 to numEpochs) {
+      sparkNet.fit(trainingData)
+    }
 
-
-    // Define network configuration with an embedding layer
-    //    val config: MultiLayerConfiguration = new NeuralNetConfiguration.Builder()
-    //      .list()
-    //      .layer(new LSTM.Builder()
-    //        .nIn(3)
-    //        .nOut(3)
-    //        .activation(Activation.TANH)
-    //        .build())
-    //      .layer(new GlobalPoolingLayer.Builder(PoolingType.AVG).build())
-    //      .layer(new OutputLayer.Builder(LossFunctions.LossFunction.NEGATIVELOGLIKELIHOOD)
-    //        .nIn(3)
-    //        .nOut(3)
-    //        .activation(Activation.SOFTMAX)
-    //        .build())
-    //      .build()
-    //
-    //    // Initialize the model with the defined configuration
-    //    val model = new MultiLayerNetwork(config)
-    //    model.init()
-
-    //    val inputData: Array[Array[Array[Double]]] = Array(
-    //      Array( // First sentence
-    //        Array(0.1, 0.2, 0.3), // Word 1
-    //        Array(0.4, 0.5, 0.6), // Word 2
-    //        Array(0.7, 0.8, 0.9),  // Word 3
-    //        Array(1.0, 1.1, 1.2)
-    //      ),
-    //      Array( // Second sentence
-    //        Array(1.0, 1.1, 1.2), // Word 1
-    //        Array(1.3, 1.4, 1.5), // Word 2
-    //        Array(1.6, 1.7, 1.8),  // Word 3
-    //        Array(1.9, 2.0, 2.1)
-    //      )
-    //    )
-    //
-    //    // Create an INDArray for the input
-    //    val inputFeatures: INDArray = Nd4j.create(inputData).permute(0, 2, 1)
-    //
-    //    // Output: Target word (represented as a 3-dimensional vector) for each sentence
-    //    val outputData: Array[Array[Double]] = Array(
-    //      Array(0.9, 0.8, 0.7),  // Target for first sentence
-    //      Array(1.8, 1.7, 1.6)   // Target for second sentence
-    //    )
-    //
-    //    // Create an INDArray for the output
-    //    val outputLabels: INDArray = Nd4j.create(outputData)
-    //
-    //    //    // Print both input and output to verify
-    //    println("Input INDArray:")
-    //    println(inputFeatures)
-    //
-    //    println("\nOutput INDArray:")
-    //    println(outputLabels)
-    //
-    //    println(s"Input shape: ${inputFeatures.shape.mkString(", ")}") // Should output: 2, 3, 4
-    //    println(s"Output shape: ${outputLabels.shape.mkString(", ")}") // Should output: 2, 3
-    //
-    //
-    //    model.fit(new DataSet(inputFeatures, outputLabels))
-
-    println("stopping sparkContext")
+    println("main(): Stopping SparkContext")
     sc.stop()
-  }
 }
-
-//object SlidingWindowDriver {
-//  def main(args: Array[String]): Unit = {
-//    val slidingWindow = new SlidingWindowTraining()
-//    slidingWindow.run()
-//  }
-//}
+}
