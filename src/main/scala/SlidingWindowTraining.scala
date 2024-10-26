@@ -39,59 +39,46 @@ object SlidingWindowTraining {
   }
 
   // Function to create sliding windows
-  private def createSlidingWindows(arr: Array[String], windowSize: Int, model: Word2Vec): DataSet = {
+  private def createSlidingWindows(arr: Array[String], windowSize: Int, overlapSize: Int, model: Word2Vec): DataSet = {
 
-    // Use sliding to generate windows and next elements
+    log.info("createSlidingWindows(): Converting words to vectors")
+    val vectorArray = arr.map { word =>
+      if (model.hasWord(word)) model.getWordVectorMatrix(word).toDoubleVector   // Getting vector for each word
+      else Array.fill(model.getLayerSize)(0.0)  // Zero vector if word is not in the model
+    }
+
+    // Use sliding to generate windows and next elements. windowSize + 1 to get the target word
     log.info("createSlidingWindows(): Creating sliding windows and targets")
-    val windowsWithTargets = arr.sliding(windowSize + 1, 1).toArray.map { window =>
+    val windowsWithTargets = vectorArray.sliding(windowSize + 1, overlapSize).toArray.map { window =>
       val mainWindow = window.take(windowSize)  // Take the main sliding window
-      val nextElement = window.lastOption.getOrElse("")  // Get the next element, or empty if none exists
-      (mainWindow, nextElement)
+      val targetElement = window.lastOption.getOrElse(Array.fill(model.getLayerSize)(0.0))  // Default to zero vector if none exists
+      (mainWindow, targetElement)
     }
 
     // Separate the sliding windows and targets into two arrays
-    val slidingWindows = windowsWithTargets.map(_._1)  // Array of arrays for the windows
-    val targets = windowsWithTargets.map(_._2)         // Array of words for the targets
+    val slidingWindowsVectors = windowsWithTargets.map(_._1)  // Array of arrays for the windows
+    val targetsVectors = windowsWithTargets.map(_._2)         // Array of words for the targets
 
 
-    log.info("createSlidingWindows(): Sliding windows and corresponding targets")
-    slidingWindows.zip(targets).foreach { case (window, target) =>
-      log.info(s"Window: ${window.mkString(", ")} => Target: $target")
-    }
+    // Print window and target. Used for debugging
+//    log.info("createSlidingWindows(): Sliding windows and corresponding targets")
+//    slidingWindowsVectors.zip(targetsVectors).foreach { case (window, target) =>
+//      log.info(s"Window: ${window.map(_.mkString(",")).mkString(" | ")} => Target: ${target.mkString(", ")}")
+//    }
 
     log.info("createSlidingWindows(): Getting DataSet for windows and target")
-    getTrainingData(slidingWindows, targets, model)
-
+    getTrainingData(slidingWindowsVectors, targetsVectors)
   }
 
 
    // Function to input an array of sentences (each sentence is an array of words) to get DataSet with input and output
-   private def getTrainingData(inputSentences: Array[Array[String]], outputWords: Array[String], model: Word2Vec): DataSet = {
-
-     // Helper function to get the word vector or a zero vector if the word is not found
-     def getWordVector(word: String): Array[Double] = {
-       if (model.hasWord(word)) {
-         model.getWordVectorMatrix(word).toDoubleVector
-       } else {
-         log.info(s"getTrainingData(): Error word: $word")
-         Array.fill(model.getLayerSize)(0.0)
-       }
-     }
-
-     // Map input sentences to their word vectors
-     val inputTensor = inputSentences.map(sentence => sentence.map(getWordVector))
+   private def getTrainingData(inputVectors: Array[Array[Array[Double]]], outputVectors: Array[Array[Double]]): DataSet = {
 
      // Create input INDArray and adjust the axes. This is a 3D tensor
-     val inputINDArray = Nd4j.create(inputTensor).permute(0, 2, 1)
-
-     // Map output words to their word vectors
-     val outputLabels = outputWords.map(getWordVector)
+     val inputINDArray = Nd4j.create(inputVectors).permute(0, 2, 1)
 
      // Create output INDArray. This is a 2D tensor
-     val outputINDArray = Nd4j.create(outputLabels)
-
-     log.info(s"Input array: $inputINDArray")
-     log.info(s"Output array: $outputINDArray")
+     val outputINDArray = Nd4j.create(outputVectors)
 
      // Return the dataset with input and outputs
      new DataSet(inputINDArray, outputINDArray)
@@ -105,19 +92,29 @@ object SlidingWindowTraining {
     val model: MultiLayerConfiguration = new NeuralNetConfiguration.Builder()
       .list()
       .layer(new LSTM.Builder()
-        .nIn(3)
-        .nOut(3)
+        .nIn(config.getInt("app.embeddingDimensions"))
+        .nOut(config.getInt("app.embeddingDimensions"))
         .activation(Activation.TANH)
         .build())
       .layer(new GlobalPoolingLayer.Builder(PoolingType.AVG).build())
       .layer(new OutputLayer.Builder(LossFunctions.LossFunction.NEGATIVELOGLIKELIHOOD)
-        .nIn(3)
-        .nOut(3)
+        .nIn(config.getInt("app.embeddingDimensions"))
+        .nOut(config.getInt("app.embeddingDimensions"))
         .activation(Activation.SOFTMAX)
         .build())
       .build()
 
     model
+  }
+
+  // Method to get the number of total windows, or training sentences per DataSet
+  def countWindows(n: Int, w: Int, o: Int): Int = {
+    require(w > o, "Error: Window size must be greater than the overlap")
+    require(n >= w, "Error: The number of words must be greater than or equal to the window size")
+
+    // Apply the formula: (n - w) / (w - o) + 1
+    val steps = (n - w).toDouble / (w - o)
+    Math.floor(steps).toInt + 1
   }
 
   def main(args: Array[String]): Unit = {
@@ -138,7 +135,7 @@ object SlidingWindowTraining {
     log.info("main(): Creating arrayOfWords")
     // Group words by index in blocks of 5, each block representing a sentence
     val arraysOfWords = dataFile
-      .flatMap(line => line.split("\\W+"))  // Split words by non-word characters
+      .flatMap(line => line.toLowerCase().split("\\W+"))  // Split words by non-word characters
       .zipWithIndex()                       // Assign an index to each word
       .map{ case (word, index) =>
         (index / config.getInt("app.sentenceLength"), word)                   // Group words into blocks of 5
@@ -150,13 +147,14 @@ object SlidingWindowTraining {
 
     log.info("main(): Creating trainingData from arrayOfWords")
     val trainingData = arraysOfWords.map(sentence => createSlidingWindows(sentence,
-      config.getInt("app.windowSize"), word2VecBroadcast.value))
+      config.getInt("app.windowSize"), config.getInt("app.overlapSize"), word2VecBroadcast.value))
 
     log.info("main(): Creating MultiLayerConfiguration")
     val model: MultiLayerConfiguration = createMultiLayerConfiguration()
 
     log.info("main(): Creating ParameterAveragingTrainingMaster")
-    val trainingMaster = new ParameterAveragingTrainingMaster.Builder(config.getInt("app.examplesPerDataSetObject")).build()
+    val trainingMaster = new ParameterAveragingTrainingMaster.Builder(countWindows(config.getInt("app.sentenceLength"),
+      config.getInt("app.windowSize"), config.getInt("app.overlapSize"))).build()
 
     log.info("main(): Creating SparkDl4jMultiLayer")
     val sparkNet = new SparkDl4jMultiLayer(sc, model, trainingMaster) // Putting together spark context, neural net model
@@ -167,7 +165,7 @@ object SlidingWindowTraining {
       sparkNet.fit(trainingData)
     }
 
-    println("main(): Stopping SparkContext")
+    log.info("main(): Stopping SparkContext")
     sc.stop()
-}
+  }
 }
