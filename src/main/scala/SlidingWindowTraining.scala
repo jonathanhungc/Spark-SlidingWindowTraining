@@ -22,6 +22,7 @@ import org.deeplearning4j.models.embeddings.loader.WordVectorSerializer
 import org.slf4j.LoggerFactory
 import com.typesafe.config.ConfigFactory
 import org.deeplearning4j.nn.weights.WeightInit
+import org.deeplearning4j.util.ModelSerializer
 
 
 object SlidingWindowTraining {
@@ -44,66 +45,63 @@ object SlidingWindowTraining {
 
     log.info("createSlidingWindows(): Converting words to vectors")
     val vectorArray = arr.map { word =>
-      if (model.hasWord(word)) model.getWordVectorMatrix(word).toDoubleVector   // Getting vector for each word
-      else Array.fill(model.getLayerSize)(0.0)  // Zero vector if word is not in the model
+      if (model.hasWord(word)) model.getWordVectorMatrix(word).toDoubleVector
+      else Array.fill(config.getInt("app.embeddingDimensions"))(0.0)
+    }
+
+    // If vectorArray is shorter than required, pad it upfront
+    val paddedVectorArray = if (vectorArray.length < windowSize + 1) {
+      vectorArray.padTo(windowSize + 1, Array.fill(config.getInt("app.embeddingDimensions"))(0.0))
+    } else {
+      vectorArray
     }
 
     log.info("createSlidingWindows(): Creating sliding windows and targets")
 
-    // Use sliding to generate windows and next elements. windowSize + 1 to get the target word
-    val initialWindows = vectorArray.sliding(windowSize + 1, overlapSize).toArray
+    // Use sliding to generate windows
+    val initialWindows = paddedVectorArray.sliding(windowSize + 1, overlapSize).toArray
 
-    // Check if the last part of the input was included, if not, add the last window
+    // Handle the last window and pad if necessary
     val lastWindow = vectorArray.slice(vectorArray.length - windowSize - 1, vectorArray.length)
+    val paddedLastWindow = if (lastWindow.length < windowSize + 1) {
+      lastWindow.padTo(windowSize + 1, Array.fill(config.getInt("app.embeddingDimensions"))(0.0))
+    } else {
+      lastWindow
+    }
 
-    // If the last window is not the same as the last in initialWindows, add it
-    val allWindows = if (initialWindows.last.deep == lastWindow.deep) {
-      initialWindows :+ lastWindow
+    // Add lastWindow to initialWindows if it’s unique
+    val allWindows = if (initialWindows.isEmpty || initialWindows.last.deep != paddedLastWindow.deep) {
+      initialWindows :+ paddedLastWindow
     } else {
       initialWindows
     }
 
+    // Ensure each window has the correct size
     val windowsWithTargets = allWindows.map { window =>
-
-      // Get the main sliding window (first `windowSize` elements)
-      val mainWindow = window.take(windowSize)
-
-      // Determine the target element. If the window has more than `windowSize` elements,
-      // take the last element, otherwise default to a zero vector. Just for error checking.
-      val targetElement = if (window.length > windowSize) window.last else Array.fill(model.getLayerSize)(0.0)
-
-      // Tuples of the input words with their target word
+      val mainWindow = window.take(windowSize).padTo(windowSize, Array.fill(config.getInt("app.embeddingDimensions"))(0.0))
+      val targetElement = if (window.length > windowSize) window.last else Array.fill(config.getInt("app.embeddingDimensions"))(0.0)
       (mainWindow, targetElement)
     }
 
-    // Separate the sliding windows and targets into two arrays
-    val slidingWindowsVectors = windowsWithTargets.map(_._1)  // Array of arrays for the windows
-    val targetsVectors = windowsWithTargets.map(_._2)         // Array of words for the targets
-
-
-    // Print window and target. Used for debugging
-//    log.info("createSlidingWindows(): Sliding windows and corresponding targets")
-//    slidingWindowsVectors.zip(targetsVectors).foreach { case (window, target) =>
-//      log.info(s"Window: ${window.map(_.mkString(",")).mkString(" | ")} => Target: ${target.mkString(", ")}")
-//    }
+    val slidingWindowsVectors = windowsWithTargets.map(_._1)
+    val targetsVectors = windowsWithTargets.map(_._2)
 
     log.info("createSlidingWindows(): Getting DataSet for windows and target")
     getTrainingData(slidingWindowsVectors, targetsVectors)
   }
 
+  def getTrainingData(inputVectors: Array[Array[Array[Double]]], outputVectors: Array[Array[Double]]): DataSet = {
 
-   // Function to input an array of sentences (each sentence is an array of words) to get DataSet with input and output
-   def getTrainingData(inputVectors: Array[Array[Array[Double]]], outputVectors: Array[Array[Double]]): DataSet = {
+    log.info(s"inputVectors dimensions: ${inputVectors.map(_.length).mkString(", ")}")
+    log.info(s"outputVectors dimensions: ${outputVectors.map(_.length).mkString(", ")}")
 
-     // Create input INDArray and adjust the axes. This is a 3D tensor
-     val inputINDArray = Nd4j.create(inputVectors).permute(0, 2, 1)
+    // Create input INDArray and adjust the axes
+    val inputINDArray = Nd4j.create(inputVectors).permute(0, 2, 1)
+    val outputINDArray = Nd4j.create(outputVectors)
 
-     // Create output INDArray. This is a 2D tensor
-     val outputINDArray = Nd4j.create(outputVectors)
+    new DataSet(inputINDArray, outputINDArray)
+  }
 
-     // Return the dataset with input and outputs
-     new DataSet(inputINDArray, outputINDArray)
-   }
 
 
   // Define network configuration with an embedding layer
@@ -114,7 +112,7 @@ object SlidingWindowTraining {
       .weightInit(WeightInit.XAVIER)
       .list()
       .layer(new LSTM.Builder()
-        .nIn(3)
+        .nIn(config.getInt("app.embeddingDimensions"))
         .nOut(128)
         .activation(Activation.TANH)
         .build())
@@ -133,7 +131,7 @@ object SlidingWindowTraining {
       .layer(new GlobalPoolingLayer.Builder(PoolingType.AVG).build())
       .layer(new OutputLayer.Builder(LossFunctions.LossFunction.MSE)
         .nIn(64)
-        .nOut(3)
+        .nOut(config.getInt("app.embeddingDimensions"))
         .activation(Activation.SOFTMAX)
         .build())
       .build()
@@ -195,7 +193,7 @@ object SlidingWindowTraining {
 
     // Load the Word2Vec model from the file
     log.info("main(): Loading Word2Vec model")
-    val word2Vec = WordVectorSerializer.readWord2VecModel("src/main/resources/wordvectors.txt")
+    val word2Vec = WordVectorSerializer.readWord2VecModel("src/main/resources/word-vectors-medium.txt")
 
     // Working with Spark
     log.info("main(): Creating SparkContext")
@@ -207,7 +205,7 @@ object SlidingWindowTraining {
     val word2VecBroadcast = sc.broadcast(word2Vec)
 
     log.info("main(): Loading input files into RDD")
-    val dataFile = sc.textFile("src/main/resources/input")
+    val dataFile = sc.textFile("src/main/resources/input-large")
 
     log.info("main(): Creating arrayOfWords")
     // Group words by index in blocks of 5, each block representing a sentence
@@ -250,11 +248,17 @@ object SlidingWindowTraining {
       new ScoreIterationListener(10), // Log every 10 iterations
       new PerformanceListener(10)
     )
+
     // Train the model for numEpochs
     val numEpochs = 10
-    for (epoch <- 1 to numEpochs) {
+    (1 to numEpochs).map { epoch =>
       sparkNet.fit(trainingData)
     }
+
+    // Save the trained model
+//    val modelFile = "src/main/resources/model.zip"
+//    log.info(s"main(): Saving model to $modelFile")
+//    ModelSerializer.writeModel(sparkNet.getNetwork, modelFile, true)
 
     val endTime = System.currentTimeMillis()
     log.info(s"main(): Training completed in ${endTime - startTime} ms")

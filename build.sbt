@@ -21,6 +21,7 @@ lazy val root = (project in file("."))
     assembly / mainClass := Some("SlidingWindow"),
     assembly / assemblyJarName := "sliding-window-training.jar",
 
+    libraryDependencies += "org.apache.hadoop" % "hadoop-common" % "3.4.0",
     libraryDependencies += "org.apache.spark" %% "spark-core" % "3.5.1",
     libraryDependencies += "org.apache.spark" %% "spark-mllib" % "3.5.1",
     libraryDependencies += "org.scalatest" %% "scalatest" % "3.2.19" % "test",

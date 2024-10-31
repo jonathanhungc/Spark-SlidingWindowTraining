@@ -17,7 +17,7 @@ class SlidingWindowTrainingTest extends AnyFunSuite with BeforeAndAfterAll {
   override def beforeAll(): Unit = {
     // Initialize Spark context and Word2Vec model for testing
     sc = SlidingWindowTraining.createSparkContext()
-    model = WordVectorSerializer.readWord2VecModel("src/main/resources/wordvectors.txt")
+    model = WordVectorSerializer.readWord2VecModel("src/main/resources/word-vectors.txt")
   }
 
   override def afterAll(): Unit = {
@@ -36,7 +36,7 @@ class SlidingWindowTrainingTest extends AnyFunSuite with BeforeAndAfterAll {
     // Setting hard values only for testing with small file
     val windowSize = 2 // config.getInt("app.windowSize")
     val overlapSize = 1 // config.getInt("app.overlapSize")
-    val embeddingDimensions = 3   // This number has to match dimension in wordvectors.txt
+    val embeddingDimensions = 3   // This number has to match dimension in word-vectors.txt
     val dataset: DataSet = SlidingWindowTraining.createSlidingWindows(sentence, windowSize, overlapSize, model)
 
     assert(dataset != null)
