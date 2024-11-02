@@ -18,8 +18,8 @@ assembly / assemblyMergeStrategy := {
 lazy val root = (project in file("."))
   .settings(
     name := "homework2",
-    assembly / mainClass := Some("SlidingWindow"),
-    assembly / assemblyJarName := "sliding-window-training.jar",
+    assembly / mainClass := Some("SlidingWindowTraining"),
+    assembly / assemblyJarName := "sliding-window-training-small-data.jar",
 
     libraryDependencies += "org.apache.hadoop" % "hadoop-common" % "3.4.0",
     libraryDependencies += "org.apache.spark" %% "spark-core" % "3.5.1",

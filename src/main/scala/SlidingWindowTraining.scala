@@ -21,26 +21,45 @@ import org.deeplearning4j.models.word2vec.Word2Vec
 import org.deeplearning4j.models.embeddings.loader.WordVectorSerializer
 import org.slf4j.LoggerFactory
 import com.typesafe.config.ConfigFactory
+import org.apache.hadoop.fs.Path
 import org.deeplearning4j.nn.weights.WeightInit
 import org.deeplearning4j.util.ModelSerializer
 
+import java.io.PrintWriter
 
 object SlidingWindowTraining {
 
   private val log = LoggerFactory.getLogger("SlidingWindowTraining")
   private val config = ConfigFactory.load()
 
-  def createSparkContext(): SparkContext = {
+  /**
+   * This function is used to initialize the SparkContext with its configuration. You can set the master
+   * for local, yarn, mesos, etc.
+   * @return  The SparkContext to run Spark
+   */
+  def createSparkContext(master: String): SparkContext = {
     // Configure Spark for local or cluster mode
     log.info("createSparkContext(): Setting up SparkConf")
     val conf = new SparkConf()
       .setAppName("Sliding Window Training")
-      .setMaster("local[*]") // For local testing, or use "yarn", "mesos", etc. in a cluster
+      .setMaster(master) // For local testing, or use "yarn", "mesos", etc. in a cluster
 
     new SparkContext(conf)
   }
 
-  // Function to create sliding windows
+  /**
+   * This function is used to create sliding windows from a group of ordered words (a sentence, or sentences). It takes
+   * the text, retrieves the vector embedding for each word, computes the windows of windowSize, with overlapSize overlap
+   * for each window, and calls a helper function to transform the input, a 3D tensor representation of
+   * [number of sentences, number of words per sentence, number of dimensions for each vector] and the target labels,
+   * a 2D tensor with [target word for each sentence, number of dimensions] that holds the word following each sentence
+   * into a DataSet object used for training the neural network model.
+   * @param arr   A sequence of ordered words or text
+   * @param windowSize  The window size for the sliding windows
+   * @param overlapSize    The step size for how many elements to advance in each window
+   * @param model   The Word2Vec model containing the vector embeddings for each word
+   * @return  A DataSet object with input and output features
+   */
   def createSlidingWindows(arr: Array[String], windowSize: Int, overlapSize: Int, model: Word2Vec): DataSet = {
 
     log.info("createSlidingWindows(): Converting words to vectors")
@@ -59,41 +78,41 @@ object SlidingWindowTraining {
     log.info("createSlidingWindows(): Creating sliding windows and targets")
 
     // Use sliding to generate windows
-    val initialWindows = paddedVectorArray.sliding(windowSize + 1, overlapSize).toArray
+    val initialWindows = paddedVectorArray.sliding(windowSize + 1, windowSize - overlapSize).toArray
 
-    // Handle the last window and pad if necessary
-    val lastWindow = vectorArray.slice(vectorArray.length - windowSize - 1, vectorArray.length)
-    val paddedLastWindow = if (lastWindow.length < windowSize + 1) {
-      lastWindow.padTo(windowSize + 1, Array.fill(config.getInt("app.embeddingDimensions"))(0.0))
-    } else {
-      lastWindow
-    }
+    // Get the last window with all the elements
+    val lastWindow = paddedVectorArray.slice(vectorArray.length - windowSize - 1, vectorArray.length)
 
-    // Add lastWindow to initialWindows if it’s unique
-    val allWindows = if (initialWindows.isEmpty || initialWindows.last.deep != paddedLastWindow.deep) {
-      initialWindows :+ paddedLastWindow
+    // if last window is incomplete and has fewer elements, replace it with another
+    val allWindows = if (!initialWindows.last.sameElements(lastWindow)) {
+      initialWindows.filterNot(_.sameElements(initialWindows.last)) :+ lastWindow
     } else {
       initialWindows
     }
 
-    // Ensure each window has the correct size
+    // Separate the windows from their targets
     val windowsWithTargets = allWindows.map { window =>
-      val mainWindow = window.take(windowSize).padTo(windowSize, Array.fill(config.getInt("app.embeddingDimensions"))(0.0))
-      val targetElement = if (window.length > windowSize) window.last else Array.fill(config.getInt("app.embeddingDimensions"))(0.0)
+      val mainWindow = window.take(windowSize)
+      val targetElement = window.last
       (mainWindow, targetElement)
     }
 
-    val slidingWindowsVectors = windowsWithTargets.map(_._1)
-    val targetsVectors = windowsWithTargets.map(_._2)
+    val slidingWindowsVectors = windowsWithTargets.map(_._1)  // The sliding windows
+    val targetsVectors = windowsWithTargets.map(_._2)   // The target for each window
 
     log.info("createSlidingWindows(): Getting DataSet for windows and target")
     getTrainingData(slidingWindowsVectors, targetsVectors)
   }
 
+  /**
+   * Function to produce the training data used in the neural network model
+   * @param inputVectors  A 3D tensor with shape [number of sentences, number of words per sentence,
+   *                      number of dimensions for each vector]. These are the training sentences
+   * @param outputVectors   2D tensor with [target word for each sentence, number of dimensions]. These are the
+   *                        target words for training
+   * @return  A DataSet object containing the input sentences with their corresponding target words
+   */
   def getTrainingData(inputVectors: Array[Array[Array[Double]]], outputVectors: Array[Array[Double]]): DataSet = {
-
-    log.info(s"inputVectors dimensions: ${inputVectors.map(_.length).mkString(", ")}")
-    log.info(s"outputVectors dimensions: ${outputVectors.map(_.length).mkString(", ")}")
 
     // Create input INDArray and adjust the axes
     val inputINDArray = Nd4j.create(inputVectors).permute(0, 2, 1)
@@ -102,9 +121,11 @@ object SlidingWindowTraining {
     new DataSet(inputINDArray, outputINDArray)
   }
 
-
-
-  // Define network configuration with an embedding layer
+  /**
+   * This function creates the MultiLayerConfiguration object used for the neural network training.
+   * It sets the layers for the configuration and builds it.
+   * @return  A MultiLayerConfiguration used for training
+   */
   def createMultiLayerConfiguration(): MultiLayerConfiguration = {
 
     log.info("createMultiLayerConfiguration(): Setting up multilayer configuration")
@@ -112,17 +133,16 @@ object SlidingWindowTraining {
       .weightInit(WeightInit.XAVIER)
       .list()
       .layer(new LSTM.Builder()
-        .nIn(config.getInt("app.embeddingDimensions"))
+        .nIn(config.getInt("app.embeddingDimensions"))  // The embedding dimensions of the vectors
         .nOut(128)
         .activation(Activation.TANH)
         .build())
       .layer(new SelfAttentionLayer.Builder()
-        .nIn(128)               // Input size matches the LSTM's output dimension
-        .nOut(128)              // Output dimension for attention layer
+        .nIn(128)
+        .nOut(128)
         .nHeads(4)
         .projectInput(true)
         .build())
-//      .layer(new DropoutLayer.Builder(0.5).build())  // Add dropout for regularization
       .layer(new DenseLayer.Builder()
         .nIn(128)
         .nOut(64)
@@ -131,73 +151,66 @@ object SlidingWindowTraining {
       .layer(new GlobalPoolingLayer.Builder(PoolingType.AVG).build())
       .layer(new OutputLayer.Builder(LossFunctions.LossFunction.MSE)
         .nIn(64)
-        .nOut(config.getInt("app.embeddingDimensions"))
-        .activation(Activation.SOFTMAX)
+        .nOut(config.getInt("app.embeddingDimensions"))   // The embedding dimensions of the vectors
+        .activation(Activation.IDENTITY)
         .build())
       .build()
-
-//    val model: MultiLayerConfiguration = new NeuralNetConfiguration.Builder()
-//      .weightInit(WeightInit.XAVIER)
-//      .list()
-//      // LSTM Layer to handle the sequence of words in each sentence
-//      .layer(new LSTM.Builder()
-//        .nIn(3)                // Input dimension: 10 (embedding dimension for each word)
-//        .nOut(128)              // LSTM output dimension (can be tuned)
-//        .activation(Activation.TANH)
-//        .build())
-//      // Self-Attention Layer to focus on relevant parts of the sequence
-//      .layer(new SelfAttentionLayer.Builder()
-//        .nIn(128)               // Input size matches the LSTM's output dimension
-//        .nOut(128)              // Output dimension for attention layer
-//        .nHeads(4)
-//        .projectInput(true)
-//        .build())
-//      // Dense Layer to increase dimensionality before output
-//      .layer(new DenseLayer.Builder()
-//        .nIn(128)
-//        .nOut(64)
-//        .activation(Activation.RELU)
-//        .build())
-//      // Output Layer for predicting a word vector
-//      .layer(new OutputLayer.Builder(LossFunctions.LossFunction.MSE) // MSE for regression on word vectors
-//        .nIn(64)
-//        .nOut(3)               // Output dimension matches the word vector's dimensions
-//        .activation(Activation.IDENTITY) // Identity activation for direct vector output
-//        .build())
-//      .build()
 
     model
   }
 
-  // Method to get the number of total windows, or training sentences per DataSet
-  def countWindows(n: Int, w: Int, o: Int): Int = {
-    require(w > o, "Error: Window size must be greater than the overlap")
-    require(n >= w, "Error: The number of words must be greater than or equal to the window size")
+  /**
+   * Function to calculate the number of total windows given by a sequence of words (text)
+   * @param numWords  The number of words per sentence
+   * @param windowSize  The window size for sliding windows
+   * @param overlapSize   The overlap size for the windows
+   * @return  The total number of windows
+   */
+  def countWindows(numWords: Int, windowSize: Int, overlapSize: Int): Int = {
+    require(windowSize > overlapSize, "Error: Window size must be greater than the overlap")
+    require(numWords >= windowSize, "Error: The number of words must be greater than or equal to the window size")
 
     // Calculate the number of full sliding windows
-    val steps = (n - w).toDouble / (w - o)
+    val steps = (numWords - windowSize).toDouble / (windowSize - overlapSize)
     val fullWindows = Math.floor(steps).toInt + 1
 
     // Check if there are any remaining elements after the last full window
-    val lastWindowStart = (fullWindows - 1) * (w - o) // Starting index of the last full window
-    if (lastWindowStart + w < n) {
-      // If the last window start plus the window size is less than total elements,
-      // we need to include one more window for the remaining elements
+    val lastWindowStart = (fullWindows - 1) * (windowSize - overlapSize) // Starting index of the last full window
+    if (lastWindowStart + windowSize < numWords) {
       fullWindows + 1
     } else {
       fullWindows
     }
   }
 
+  /**
+   * This is the main function and driver for the program. It loads a Word2Vec model with vector embeddings, reads a
+   * directory of .txt files for input, splits the text and calls functions to get sliding windows of the text with
+   * their targets as tensor representations RDDs, initializes a NN for training on sequence prediction, trains the NN
+   * using the sliding windows using distributed training, and collects metrics of performance of the program.
+   * It takes arguments for the path of the wWrd2Vec model, the input directory, the path to write the NN model, and the
+   * path to write the stats file.
+   * @param args  Paths for the existing Word2Vec model, the input directory, the path to write the NN model, and the
+   *              * path to write the stats file.
+   */
   def main(args: Array[String]): Unit = {
 
     // Load the Word2Vec model from the file
     log.info("main(): Loading Word2Vec model")
-    val word2Vec = WordVectorSerializer.readWord2VecModel("src/main/resources/word-vectors-medium.txt")
+
+    val word2VecPath = new Path(args(0)).toString // "s3://jonathan-homework2/input/word-vectors-medium.txt" // "src/main/resources/word-vectors.txt"
+    val inputDir = new Path(args(1)).toString // "s3://jonathan-homework2/input/input-small/"  // "src/main/resources/input"
+    val modelFile = new Path(args(2)).toString // "s3://jonathan-homework2/output/model.zip"   // "src/main/resources/model.zip"
+    val statsFile = new Path(args(3)).toString // "s3://jonathan-homework2/output/training-stats.txt"   // "src/main/resources/training-stats.txt"
+
+    val word2Vec = WordVectorSerializer.readWord2VecModel(word2VecPath)
+
+    // Setting up file to write stats
+    val writer = new PrintWriter(statsFile)
 
     // Working with Spark
     log.info("main(): Creating SparkContext")
-    val sc = createSparkContext()
+    val sc = createSparkContext("local[*]")   // Set master for SparkContext
 
     // Track the start time for metrics
     val startTime = System.currentTimeMillis()
@@ -205,7 +218,7 @@ object SlidingWindowTraining {
     val word2VecBroadcast = sc.broadcast(word2Vec)
 
     log.info("main(): Loading input files into RDD")
-    val dataFile = sc.textFile("src/main/resources/input-large")
+    val dataFile = sc.textFile(inputDir)
 
     log.info("main(): Creating arrayOfWords")
     // Group words by index in blocks of 5, each block representing a sentence
@@ -224,15 +237,21 @@ object SlidingWindowTraining {
     val trainingData = arraysOfWords.map(sentence => createSlidingWindows(sentence,
       config.getInt("app.windowSize"), config.getInt("app.overlapSize"), word2VecBroadcast.value))
 
+    val numPartitions = trainingData.getNumPartitions
+    log.info(s"Number of partitions: $numPartitions")
+    writer.println(s"Number of partitions: $numPartitions")
+
     log.info("main(): Creating MultiLayerConfiguration")
     val model: MultiLayerConfiguration = createMultiLayerConfiguration()
 
-
     log.info("main(): Creating Training Master")
-    val numWindows = countWindows(config.getInt("app.sentenceLength"), config.getInt("app.windowSize"), config.getInt("app.overlapSize"))
+    val numWindows = countWindows(config.getInt("app.sentenceLength"), config.getInt("app.windowSize"),
+      config.getInt("app.overlapSize"))
 
     val trainingMaster = new ParameterAveragingTrainingMaster.Builder(numWindows)
       .batchSizePerWorker(numWindows)
+      .averagingFrequency(5)   // Frequency of parameter averaging
+      .workerPrefetchNumBatches(2)
       .build()
 
 //    val trainingMaster = new SharedTrainingMaster.Builder(numWindows)
@@ -250,18 +269,35 @@ object SlidingWindowTraining {
     )
 
     // Train the model for numEpochs
-    val numEpochs = 10
-    (1 to numEpochs).map { epoch =>
+    val numEpochs = 20
+    (1 to numEpochs).foreach { epoch =>
+      val epochStart = System.currentTimeMillis()
+
       sparkNet.fit(trainingData)
+
+      val epochEnd = System.currentTimeMillis()
+      val epochTime = epochEnd - epochStart
+
+      log.info(s"Epoch $epoch time: ${epochTime}ms")
+
+      // Write the epoch time to the file
+      writer.println(s"Epoch $epoch time: ${epochTime}ms")
     }
 
     // Save the trained model
-//    val modelFile = "src/main/resources/model.zip"
-//    log.info(s"main(): Saving model to $modelFile")
-//    ModelSerializer.writeModel(sparkNet.getNetwork, modelFile, true)
+    log.info(s"main(): Saving model to $modelFile")
+    ModelSerializer.writeModel(sparkNet.getNetwork, modelFile, true)
 
     val endTime = System.currentTimeMillis()
-    log.info(s"main(): Training completed in ${endTime - startTime} ms")
+
+    val totalTime = endTime - startTime
+
+    log.info(s"main(): Program completed in $totalTime ms")
+
+    writer.println(s"Program completed in: $totalTime ms")
+
+    // Close the file writer after all epochs
+    writer.close()
 
     log.info("main(): Stopping SparkContext")
     sc.stop()

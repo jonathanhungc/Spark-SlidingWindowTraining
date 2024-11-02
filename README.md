@@ -28,7 +28,8 @@ created correctly.
 ```
 sbt clean
 sbt compile
-sbt "run src/main/resources/input src/main/resources/output"
+sbt "run src/main/resources/word-vectors.txt src/main/resources/input src/main/resources/model.zip src/main/resources/training-stats.txt"
+
 ```
 
 ### The video of the deployment on Amazon EMR (Elastic Map Reduce) is found [here](https://youtu.be/qI8PZPiBnFM)

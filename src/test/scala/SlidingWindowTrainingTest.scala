@@ -11,15 +11,21 @@ import org.slf4j.LoggerFactory
 class SlidingWindowTrainingTest extends AnyFunSuite with BeforeAndAfterAll {
 
   private val config = ConfigFactory.load()
+
+  // These are vars that are lazily evaluated, since they are initialized every time one of the tests
+  // in this file is run. These vars are not meant to be accessed in a parallelized way, so there shouldn't be any
+  // problem with them, and it's safe to use them in this instance.
   var sc: SparkContext = _
   var model: Word2Vec = _
 
+  // Setting up SparkContext and reading Word2Vec model for testing
   override def beforeAll(): Unit = {
     // Initialize Spark context and Word2Vec model for testing
-    sc = SlidingWindowTraining.createSparkContext()
+    sc = SlidingWindowTraining.createSparkContext("local[*]")
     model = WordVectorSerializer.readWord2VecModel("src/main/resources/word-vectors.txt")
   }
 
+  // Stop SparkContext after the tests
   override def afterAll(): Unit = {
     sc.stop()
   }
@@ -70,6 +76,6 @@ class SlidingWindowTrainingTest extends AnyFunSuite with BeforeAndAfterAll {
     val w = 3
     val o = 1
     val result = SlidingWindowTraining.countWindows(n, w, o)
-    assert(result == 5, s"Expected 4 windows, but got $result")
+    assert(result == 5, s"Expected 5 windows, but got $result")
   }
 }
