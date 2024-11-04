@@ -36,25 +36,27 @@ class SlidingWindowTrainingTest extends AnyFunSuite with BeforeAndAfterAll {
     assert(sc.isLocal, "Spark context should be in local mode for testing")
   }
 
+  // This test checks that createSlidingWindows() creates the sliding windows correctly with their targets
   test("createSlidingWindows() should generate sliding windows and targets") {
-    val sentence = Array("hello", "this", "is", "a", "test", "for", "scala")
+    val sentence = Array("hello", "this", "is", "a", "test", "for", "scala", "to", "check", "windows")
 
     // Setting hard values only for testing with small file
-    val windowSize = 2 // config.getInt("app.windowSize")
+    val windowSize = 3 // config.getInt("app.windowSize")
     val overlapSize = 1 // config.getInt("app.overlapSize")
     val embeddingDimensions = 3   // This number has to match dimension in word-vectors.txt
-    val dataset: DataSet = SlidingWindowTraining.createSlidingWindows(sentence, windowSize, overlapSize, model)
+    val dataset: DataSet = SlidingWindowTraining.createSlidingWindows(sentence, windowSize, overlapSize, model, config.getInt("test.embeddingDimensions"))
 
     assert(dataset != null)
-    assert(dataset.getFeatures.rank() == 3, "Input features should be a 3D tensor")
+    assert(dataset.getFeatures.rank() == 3, "Input features should be a 3D tensor") // checking rank of input
 
-    // 6 windows, 3 embedding dimensions, and 2 words per window
-    assert(dataset.getFeatures.shape().sameElements(Array(6, embeddingDimensions,
+    // 4 windows, 3 embedding dimensions, and 3 words per window
+    assert(dataset.getFeatures.shape().sameElements(Array(4, embeddingDimensions,
       windowSize)), "The shape of the features should be [batchSize, embeddingSize, SequenceLength]")
 
-    assert(dataset.getLabels.rank() == 2, "Output labels should be a 2D tensor")
+    assert(dataset.getLabels.rank() == 2, "Output labels should be a 2D tensor")  // checking rank ot output labels
   }
 
+  // This test checks the method getTrainingData() and that it generates the correct input format for the model
   test("getTrainingData() should return a DataSet with correct shapes") {
     val inputVectors = Array(Array(Array(1.0, 0.5, 0.1), Array(0.2, 0.3, 0.6)))
     val outputVectors = Array(Array(0.1, 0.2, 0.3))
@@ -65,16 +67,18 @@ class SlidingWindowTrainingTest extends AnyFunSuite with BeforeAndAfterAll {
     assert(dataset.getLabels.shape().sameElements(Array(1, 3)), "Label shape should match output vectors")
   }
 
+  // This test checks that the multilayer configuration is being created properly for training
   test("createMultiLayerConfiguration() should configure a neural network model") {
-    val config = SlidingWindowTraining.createMultiLayerConfiguration()
-    assert(config != null, "Configuration should not be null")
-    //assert(config.getConf(0).getLayer.getNIn == 3, "First layer input should match word vector size")
+    val configNN = SlidingWindowTraining.createMultiLayerConfiguration(config.getInt("test.embeddingDimensions"))
+    assert(configNN != null, "Configuration should not be null")
   }
 
+  // This test checks that the function to count how many windows a sentence will have based on the number of
+  // words in the sentence, the window size and the overlap size
   test("countWindows() should correctly calculate the number of sliding windows") {
-    val n = 10
-    val w = 3
-    val o = 1
+    val n = 10  // number of total elements
+    val w = 3 // number of elements per window
+    val o = 1 // number of overlap elements
     val result = SlidingWindowTraining.countWindows(n, w, o)
     assert(result == 5, s"Expected 5 windows, but got $result")
   }

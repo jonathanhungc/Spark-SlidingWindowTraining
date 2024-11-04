@@ -60,17 +60,17 @@ object SlidingWindowTraining {
    * @param model   The Word2Vec model containing the vector embeddings for each word
    * @return  A DataSet object with input and output features
    */
-  def createSlidingWindows(arr: Array[String], windowSize: Int, overlapSize: Int, model: Word2Vec): DataSet = {
+  def createSlidingWindows(arr: Array[String], windowSize: Int, overlapSize: Int, model: Word2Vec, embeddingSize: Int): DataSet = {
 
     log.info("createSlidingWindows(): Converting words to vectors")
     val vectorArray = arr.map { word =>
       if (model.hasWord(word)) model.getWordVectorMatrix(word).toDoubleVector
-      else Array.fill(config.getInt("app.embeddingDimensions"))(0.0)
+      else Array.fill(embeddingSize)(0.0)
     }
 
     // If vectorArray is shorter than required, pad it upfront
     val paddedVectorArray = if (vectorArray.length < windowSize + 1) {
-      vectorArray.padTo(windowSize + 1, Array.fill(config.getInt("app.embeddingDimensions"))(0.0))
+      vectorArray.padTo(windowSize + 1, Array.fill(embeddingSize)(0.0))
     } else {
       vectorArray
     }
@@ -124,16 +124,17 @@ object SlidingWindowTraining {
   /**
    * This function creates the MultiLayerConfiguration object used for the neural network training.
    * It sets the layers for the configuration and builds it.
+   * @param embeddingSize The embedding dimensions of the words used in the input
    * @return  A MultiLayerConfiguration used for training
    */
-  def createMultiLayerConfiguration(): MultiLayerConfiguration = {
+  def createMultiLayerConfiguration(embeddingSize: Int): MultiLayerConfiguration = {
 
     log.info("createMultiLayerConfiguration(): Setting up multilayer configuration")
     val model: MultiLayerConfiguration = new NeuralNetConfiguration.Builder()
       .weightInit(WeightInit.XAVIER)
       .list()
       .layer(new LSTM.Builder()
-        .nIn(config.getInt("app.embeddingDimensions"))  // The embedding dimensions of the vectors
+        .nIn(embeddingSize)  // The embedding dimensions of the vectors
         .nOut(128)
         .activation(Activation.TANH)
         .build())
@@ -151,7 +152,7 @@ object SlidingWindowTraining {
       .layer(new GlobalPoolingLayer.Builder(PoolingType.AVG).build())
       .layer(new OutputLayer.Builder(LossFunctions.LossFunction.MSE)
         .nIn(64)
-        .nOut(config.getInt("app.embeddingDimensions"))   // The embedding dimensions of the vectors
+        .nOut(embeddingSize)   // The embedding dimensions of the vectors
         .activation(Activation.IDENTITY)
         .build())
       .build()
@@ -235,14 +236,14 @@ object SlidingWindowTraining {
 
     log.info("main(): Creating trainingData from arrayOfWords")
     val trainingData = arraysOfWords.map(sentence => createSlidingWindows(sentence,
-      config.getInt("app.windowSize"), config.getInt("app.overlapSize"), word2VecBroadcast.value))
+      config.getInt("app.windowSize"), config.getInt("app.overlapSize"), word2VecBroadcast.value, config.getInt("app.embeddingDimensions")))
 
     val numPartitions = trainingData.getNumPartitions
     log.info(s"Number of partitions: $numPartitions")
     writer.println(s"Number of partitions: $numPartitions")
 
     log.info("main(): Creating MultiLayerConfiguration")
-    val model: MultiLayerConfiguration = createMultiLayerConfiguration()
+    val model: MultiLayerConfiguration = createMultiLayerConfiguration(config.getInt("app.embeddingDimensions"))
 
     log.info("main(): Creating Training Master")
     val numWindows = countWindows(config.getInt("app.sentenceLength"), config.getInt("app.windowSize"),
@@ -254,14 +255,14 @@ object SlidingWindowTraining {
       .workerPrefetchNumBatches(2)
       .build()
 
-//    val trainingMaster = new SharedTrainingMaster.Builder(numWindows)
-//      .batchSizePerWorker(numWindows)
-//      .workersPerNode(4)  // Define number of workers per node in the cluster
-//      .build()
+    //    val trainingMaster = new SharedTrainingMaster.Builder(numWindows)
+    //      .batchSizePerWorker(numWindows)
+    //      .workersPerNode(4)  // Define number of workers per node in the cluster
+    //      .build()
 
     log.info("main(): Creating SparkDl4jMultiLayer")
     val sparkNet = new SparkDl4jMultiLayer(sc, model, trainingMaster) // Putting together spark context, neural net model
-                                                                      // and training master
+    // and training master
 
     sparkNet.setListeners(
       new ScoreIterationListener(10), // Log every 10 iterations
@@ -282,6 +283,7 @@ object SlidingWindowTraining {
 
       // Write the epoch time to the file
       writer.println(s"Epoch $epoch time: ${epochTime}ms")
+      writer.println(s"Epoch $epoch learning rate: ${sparkNet.getNetwork.getLearningRate(0)}")
     }
 
     // Save the trained model

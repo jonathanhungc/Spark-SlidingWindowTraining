@@ -20,15 +20,21 @@ training text, while the word vectors files hold vector embeddings.
 - **src/test/scala/Test.scala**: This file has all the tests for the functions used in the main file
 (SlidingWindowTraining.scala). It tests that the functions used for splitting and transforming the data work correctly,
 and that they provide the expected format for training. It also tests that the SparkContext and neural network are
-created correctly.
+created correctly. For the scala tests to run correctly, the specified variables 
 - **build.sbt**: This file has all the dependencies of the program, including Apache Spark, DeepLearning4j, etc.
-- **Input**: A directory with .txt files with sentences
-- **Output**: A NN model, saved by the program after training
+- **src/main/resources/application.conf**: This file sets different variables in the program, according  to the input data.
+- **Input**: A directory with .txt files with sentences, and a .txt file with the vector embeddings of each word
+- **Output**: A NN model saved by the program after training, and a training-stats.txt file with the stats of the training
+- The input and output paths must be given when executing the program, and the variables in application.conf must be set
+according to the input. For instance, in the below running commands the program will run with around 4MB of data. The
+input directory in this case is src/main/resources/input-medium, and the word vector embeddings file for this directory 
+is src/main/resources/word-vectors-medium.txt. After execution, the NN model will be saved to src/main/resources/model.zip
+and a file with the stats of training will be written to src/main/resources/training-stats.txt.
 ### To run the program execute the following commands (you may want to delete the src/main/resources/output directory before running this):
 ```
 sbt clean
 sbt compile
-sbt "run src/main/resources/word-vectors.txt src/main/resources/input src/main/resources/model.zip src/main/resources/training-stats.txt"
+sbt "run src/main/resources/word-vectors-medium.txt src/main/resources/input-medium src/main/resources/model.zip src/main/resources/training-stats.txt"
 
 ```
 
