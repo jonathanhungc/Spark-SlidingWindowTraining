@@ -41,8 +41,8 @@ class SlidingWindowTrainingTest extends AnyFunSuite with BeforeAndAfterAll {
     val sentence = Array("hello", "this", "is", "a", "test", "for", "scala", "to", "check", "windows")
 
     // Setting hard values only for testing with small file
-    val windowSize = 3 // config.getInt("app.windowSize")
-    val overlapSize = 1 // config.getInt("app.overlapSize")
+    val windowSize = 3 // config.getInt("test.windowSize")
+    val overlapSize = 1 // config.getInt("test.overlapSize")
     val embeddingDimensions = 3   // This number has to match dimension in word-vectors.txt
     val dataset: DataSet = SlidingWindowTraining.createSlidingWindows(sentence, windowSize, overlapSize, model, config.getInt("test.embeddingDimensions"))
 

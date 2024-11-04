@@ -23,6 +23,7 @@ and that they provide the expected format for training. It also tests that the S
 created correctly. For the scala tests to run correctly, the specified variables 
 - **build.sbt**: This file has all the dependencies of the program, including Apache Spark, DeepLearning4j, etc.
 - **src/main/resources/application.conf**: This file sets different variables in the program, according  to the input data.
+There's one configuration for the Scala tests, and one for the actual extensive testing.
 - **Input**: A directory with .txt files with sentences, and a .txt file with the vector embeddings of each word
 - **Output**: A NN model saved by the program after training, and a training-stats.txt file with the stats of the training
 - The input and output paths must be given when executing the program, and the variables in application.conf must be set
