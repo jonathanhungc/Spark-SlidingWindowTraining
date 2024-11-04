@@ -270,7 +270,7 @@ object SlidingWindowTraining {
     )
 
     // Train the model for numEpochs
-    val numEpochs = 20
+    val numEpochs = 10
     (1 to numEpochs).foreach { epoch =>
       val epochStart = System.currentTimeMillis()
 
