@@ -39,4 +39,4 @@ sbt "run src/main/resources/word-vectors-medium.txt src/main/resources/input-med
 
 ```
 
-### The video of the deployment on Amazon EMR (Elastic Map Reduce) is found [here](https://youtu.be/qI8PZPiBnFM)
+### The video of the deployment on Amazon EMR (Elastic Map Reduce) is found [here](https://youtu.be/A7zg2CNXHAk)
