@@ -1,0 +1,22 @@
+Number of partitions: 3
+Epoch 1 time: 393027ms
+Epoch 1 learning rate: 0.001
+Epoch 2 time: 354379ms
+Epoch 2 learning rate: 0.001
+Epoch 3 time: 350626ms
+Epoch 3 learning rate: 0.001
+Epoch 4 time: 355225ms
+Epoch 4 learning rate: 0.001
+Epoch 5 time: 351295ms
+Epoch 5 learning rate: 0.001
+Epoch 6 time: 348999ms
+Epoch 6 learning rate: 0.001
+Epoch 7 time: 352530ms
+Epoch 7 learning rate: 0.001
+Epoch 8 time: 350955ms
+Epoch 8 learning rate: 0.001
+Epoch 9 time: 353797ms
+Epoch 9 learning rate: 0.001
+Epoch 10 time: 349950ms
+Epoch 10 learning rate: 0.001
+Program completed in: 3564146 ms
